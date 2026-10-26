@@ -8,83 +8,210 @@
     <script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
     <style>
         body { background-color: #0f172a; color: #f8fafc; font-family: sans-serif; }
+        .hide-scroll::-webkit-scrollbar { display: none; }
     </style>
 </head>
 <body>
     <div id="root"></div>
     <script type="text/babel">
+        const firebaseConfig = {
+            apiKey: "",
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
+        };
+
+        const tmdbKey = "3ffa81135b2d36d019609fae5a92caa9";
+
+        let db = null;
+        if (firebaseConfig.apiKey) {
+            if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+            db = firebase.firestore();
+        }
+
         const { useState, useEffect } = React;
 
         function App() {
             const [shows, setShows] = useState([]);
+            const [viewType, setViewType] = useState('tv'); 
             const [inputValue, setInputValue] = useState('');
+            const [searchResults, setSearchResults] = useState([]);
             const [status, setStatus] = useState('Visto');
+            const [rating, setRating] = useState(0);
 
             useEffect(() => {
-                const saved = localStorage.getItem('cinetrack_shows');
-                if (saved) setShows(JSON.parse(saved));
+                if (db) {
+                    const unsubscribe = db.collection("cinetrack_items").orderBy("createdAt", "desc").onSnapshot((querySnapshot) => {
+                        const items = [];
+                        querySnapshot.forEach((doc) => items.push({ id: doc.id, ...doc.data() }));
+                        setShows(items);
+                    });
+                    return () => unsubscribe();
+                } else {
+                    const saved = localStorage.getItem('cinetrack_items');
+                    if (saved) setShows(JSON.parse(saved));
+                }
             }, []);
 
-            const addShow = (e) => {
+            useEffect(() => {
+                if (inputValue.length > 2 && tmdbKey) {
+                    fetch(`https://api.themoviedb.org/3/search/${viewType}?api_key=${tmdbKey}&language=pt-BR&query=${inputValue}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.results) setSearchResults(data.results.slice(0, 5));
+                    })
+                    .catch(console.error);
+                } else {
+                    setSearchResults([]);
+                }
+            }, [inputValue, viewType]);
+
+            const addItem = (e) => {
                 e.preventDefault();
                 if (!inputValue.trim()) return;
-                const newShow = { id: Date.now(), name: inputValue, status };
-                const updatedShows = [...shows, newShow];
-                setShows(updatedShows);
-                localStorage.setItem('cinetrack_shows', JSON.stringify(updatedShows));
+                
+                const newItem = { name: inputValue, type: viewType, status, rating, createdAt: Date.now() };
+                
+                if (db) {
+                    db.collection("cinetrack_items").add(newItem);
+                } else {
+                    newItem.id = Date.now().toString();
+                    const updatedShows = [newItem, ...shows];
+                    setShows(updatedShows);
+                    localStorage.setItem('cinetrack_items', JSON.stringify(updatedShows));
+                }
+                
                 setInputValue('');
+                setSearchResults([]);
+                setRating(0);
             };
 
-            const removeShow = (id) => {
-                const updatedShows = shows.filter(show => show.id !== id);
-                setShows(updatedShows);
-                localStorage.setItem('cinetrack_shows', JSON.stringify(updatedShows));
+            const removeItem = (id) => {
+                if (db) {
+                    db.collection("cinetrack_items").doc(id).delete();
+                } else {
+                    const updatedShows = shows.filter(show => show.id !== id);
+                    setShows(updatedShows);
+                    localStorage.setItem('cinetrack_items', JSON.stringify(updatedShows));
+                }
             };
 
-            const renderList = (listStatus) => (
-                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 mb-6">
-                    <h2 className="text-xl font-bold text-yellow-400 mb-4 border-b border-slate-700 pb-2">{listStatus}</h2>
-                    <ul>
-                        {shows.filter(s => s.status === listStatus).map(show => (
-                            <li key={show.id} className="flex justify-between items-center py-2 border-b border-slate-700/50 last:border-0">
-                                <span className="font-medium">{show.name}</span>
-                                <button onClick={() => removeShow(show.id)} className="text-red-400 text-sm hover:text-red-300">Remover</button>
-                            </li>
+            const selectResult = (item) => {
+                const title = viewType === 'movie' ? item.title : item.name;
+                setInputValue(title);
+                setSearchResults([]);
+            };
+
+            const renderStars = (currentRating, interactive = false, onRate = null) => {
+                return (
+                    <div className="flex gap-1 text-2xl">
+                        {[1, 2, 3, 4, 5].map(star => (
+                            <span 
+                                key={star} 
+                                onClick={() => interactive && onRate(star)}
+                                className={`${interactive ? 'cursor-pointer hover:scale-125 transition-transform' : ''} ${currentRating >= star ? 'text-yellow-400' : 'text-slate-600'}`}
+                            >
+                                ★
+                            </span>
                         ))}
-                        {shows.filter(s => s.status === listStatus).length === 0 && (
-                            <li className="text-slate-500 text-sm italic">Nenhuma série adicionada.</li>
-                        )}
-                    </ul>
-                </div>
-            );
+                    </div>
+                );
+            };
+
+            const renderList = (listStatus) => {
+                const filtered = shows.filter(s => s.status === listStatus && s.type === viewType);
+                return (
+                    <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 mb-6 shadow-lg">
+                        <h2 className="text-xl font-bold text-yellow-400 mb-4 border-b border-slate-700 pb-2">{listStatus}</h2>
+                        <ul>
+                            {filtered.map(show => (
+                                <li key={show.id} className="flex flex-col py-3 border-b border-slate-700/50 last:border-0">
+                                    <div className="flex justify-between items-start mb-2">
+                                        <span className="font-bold text-lg text-white">{show.name}</span>
+                                        <button onClick={() => removeItem(show.id)} className="text-red-400 text-sm hover:text-red-300 font-medium ml-4">Excluir</button>
+                                    </div>
+                                    {show.rating > 0 && renderStars(show.rating)}
+                                </li>
+                            ))}
+                            {filtered.length === 0 && (
+                                <li className="text-slate-500 text-sm italic">Nenhuma obra adicionada aqui.</li>
+                            )}
+                        </ul>
+                    </div>
+                );
+            };
 
             return (
-                <div className="max-w-md mx-auto p-6">
-                    <h1 className="text-3xl font-extrabold text-center mb-8 tracking-tight">
+                <div className="max-w-md mx-auto p-4 pb-20">
+                    <h1 className="text-4xl font-extrabold text-center mb-6 tracking-tight mt-4">
                         <span className="text-yellow-400">Cine</span>Track
                     </h1>
+
+                    <div className="flex bg-slate-800 rounded-lg p-1 mb-8 shadow-inner border border-slate-700">
+                        <button 
+                            onClick={() => setViewType('tv')}
+                            className={`flex-1 py-2 rounded-md font-bold transition-colors ${viewType === 'tv' ? 'bg-yellow-400 text-slate-900' : 'text-slate-400 hover:text-white'}`}
+                        >
+                            📺 Séries
+                        </button>
+                        <button 
+                            onClick={() => setViewType('movie')}
+                            className={`flex-1 py-2 rounded-md font-bold transition-colors ${viewType === 'movie' ? 'bg-yellow-400 text-slate-900' : 'text-slate-400 hover:text-white'}`}
+                        >
+                            🎬 Filmes
+                        </button>
+                    </div>
                     
-                    <form onSubmit={addShow} className="mb-8 flex flex-col gap-3">
-                        <input 
-                            type="text" 
-                            value={inputValue}
-                            onChange={(e) => setInputValue(e.target.value)}
-                            placeholder="Nome da série ou filme..." 
-                            className="w-full bg-slate-800 text-white border border-slate-600 rounded-lg p-3 focus:outline-none focus:border-yellow-400"
-                        />
-                        <div className="flex gap-2">
+                    <form onSubmit={addItem} className="mb-8 flex flex-col gap-4 bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg relative">
+                        <div className="relative">
+                            <input 
+                                type="text" 
+                                value={inputValue}
+                                onChange={(e) => setInputValue(e.target.value)}
+                                placeholder={`Buscar ${viewType === 'tv' ? 'série' : 'filme'}...`} 
+                                className="w-full bg-slate-900 text-white border border-slate-600 rounded-lg p-3 focus:outline-none focus:border-yellow-400"
+                            />
+                            
+                            {searchResults.length > 0 && (
+                                <ul className="absolute z-10 w-full bg-slate-700 border border-slate-600 rounded-lg mt-1 shadow-2xl max-h-60 overflow-y-auto hide-scroll">
+                                    {searchResults.map(item => (
+                                        <li 
+                                            key={item.id} 
+                                            onClick={() => selectResult(item)}
+                                            className="p-3 border-b border-slate-600 hover:bg-slate-600 cursor-pointer text-sm text-white"
+                                        >
+                                            {viewType === 'movie' ? item.title : item.name} 
+                                            <span className="text-slate-400 ml-2 text-xs">
+                                                ({(item.release_date || item.first_air_date || '').split('-')[0]})
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                        
+                        <div className="flex flex-col gap-1">
+                            <span className="text-sm text-slate-400 font-medium uppercase tracking-wider">Nota (Opcional)</span>
+                            {renderStars(rating, true, setRating)}
+                        </div>
+
+                        <div className="flex gap-3 mt-2">
                             <select 
                                 value={status} 
                                 onChange={(e) => setStatus(e.target.value)}
-                                className="bg-slate-800 text-white border border-slate-600 rounded-lg p-3 w-1/2 focus:outline-none focus:border-yellow-400"
+                                className="bg-slate-900 text-white border border-slate-600 rounded-lg p-3 w-1/2 focus:outline-none focus:border-yellow-400"
                             >
                                 <option>Visto</option>
                                 <option>A Ver</option>
                                 <option>Quero Ver</option>
                             </select>
-                            <button type="submit" className="bg-yellow-400 text-slate-900 font-bold rounded-lg p-3 w-1/2 hover:bg-yellow-300 transition-colors">
+                            <button type="submit" className="bg-yellow-400 text-slate-900 font-bold rounded-lg p-3 w-1/2 hover:bg-yellow-300 transition-colors shadow-[0_0_15px_rgba(250,204,21,0.2)]">
                                 Adicionar
                             </button>
                         </div>
